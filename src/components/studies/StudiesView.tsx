@@ -55,21 +55,31 @@ export const StudiesView: React.FC<StudiesViewProps> = ({ translation }) => {
           ? 'bg-neutral-50 border-neutral-200 text-neutral-900'
           : 'bg-neutral-950/80 border-neutral-800 text-neutral-100'
       }`}>
-        <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${
-            isWhite ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-950'
-          }`}>
-            <GraduationCap className="w-5 h-5" />
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${
+              isWhite ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-950'
+            }`}>
+              <GraduationCap className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className={`text-2xl sm:text-3xl font-black ${isWhite ? 'text-neutral-950' : 'text-white'}`}>
+                  Générateur d'Études Bibliques
+                </h1>
+                <span className={`hidden sm:inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  isWhite
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-emerald-950/40 text-emerald-300 border-emerald-800'
+                }`}>
+                  <Sparkles className="w-2.5 h-2.5" />
+                  Live Web & RAG
+                </span>
+              </div>
+              <p className={`text-xs sm:text-sm ${isWhite ? 'text-neutral-600' : 'text-neutral-400'}`}>
+                Concevez des parcours d'études théologiques structurés et documentés en direct sur le Net.
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className={`text-2xl sm:text-3xl font-black ${isWhite ? 'text-neutral-950' : 'text-white'}`}>
-              Générateur d'Études Bibliques
-            </h1>
-            <p className={`text-xs sm:text-sm ${isWhite ? 'text-neutral-600' : 'text-neutral-400'}`}>
-              Concevez des parcours d'études théologiques structurés pour vos groupes de maison ou votre méditation personnelle.
-            </p>
-          </div>
-        </div>
 
         {/* STUDY CONFIGURATION FORM */}
         <div className="pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">

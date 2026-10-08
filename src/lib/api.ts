@@ -201,6 +201,119 @@ async function fetchJsonSafely(url: string): Promise<any | null> {
   }
 }
 
+// Helper to retrieve custom or configured Gemini API key
+export function getStoredApiKey(): string {
+  try {
+    return (
+      localStorage.getItem('bible_ai_gemini_key') ||
+      (import.meta as any).env?.VITE_GEMINI_API_KEY ||
+      ''
+    );
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredApiKey(key: string): void {
+  try {
+    localStorage.setItem('bible_ai_gemini_key', key.trim());
+  } catch {}
+}
+
+async function fetchClientLiveWeb(query: string): Promise<string> {
+  try {
+    const clean = query
+      .replace(/Génère une étude biblique.*?:\s*/gi, '')
+      .replace(/[«»"]/g, '')
+      .trim();
+    const url =
+      'https://fr.wikipedia.org/w/api.php?action=query&list=search&srsearch=' +
+      encodeURIComponent(clean.slice(0, 80)) +
+      '&format=json&origin=*';
+    const res = await fetch(url);
+    if (!res.ok) return '';
+    const data = await res.json();
+    const list = (data?.query?.search || []).slice(0, 3);
+    if (list.length === 0) return '';
+    return list
+      .map((item: any) => `• ${item.title} : ${(item.snippet || '').replace(/<[^>]+>/g, '').trim()}`)
+      .join('\n');
+  } catch {
+    return '';
+  }
+}
+
+export async function testGeminiApiKey(
+  apiKey: string
+): Promise<{ success: boolean; message: string; model?: string }> {
+  const models = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+  for (const m of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'Dis uniquement : Connecté avec succès.' }] }]
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (txt) {
+          return { success: true, message: txt.trim(), model: m };
+        }
+      } else {
+        const errData = await res.json().catch(() => null);
+        if (errData?.error?.message) {
+          if (m === models[models.length - 1]) {
+            return { success: false, message: errData.error.message };
+          }
+        }
+      }
+    } catch (e: any) {
+      if (m === models[models.length - 1]) {
+        return { success: false, message: e.message || 'Erreur réseau' };
+      }
+    }
+  }
+  return { success: false, message: 'Impossible de valider la clé API.' };
+}
+
+async function callDirectClientGemini(
+  prompt: string,
+  systemPrompt: string,
+  apiKey: string
+): Promise<string | null> {
+  const models = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text && text.trim().length > 0) {
+          return text;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 export const api = {
   // --- BOOKS ---
   async getBooks(): Promise<BibleBook[]> {
@@ -517,19 +630,61 @@ export const api = {
     };
   },
 
-  // --- AI WITH BIBLE SEARCH INTEGRATION ---
+  // --- AI WITH BIBLE SEARCH & LIVE WEB INTEGRATION ---
   async chatWithAi(prompt: string, agentType?: string, translation: 'LSG' | 'KJV' = 'LSG'): Promise<AiChatResponse> {
+    const customKey = getStoredApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (customKey) {
+      headers['x-gemini-api-key'] = customKey;
+    }
+
     try {
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, agentType, translation }),
+        headers,
+        body: JSON.stringify({ prompt, agentType, translation, apiKey: customKey }),
       });
       if (res.ok) {
         const data = await res.json();
-        if (data && data.answer) return data;
+        // If data has a rich generated answer without configuration warnings
+        if (data && data.answer && !data.answer.includes('Configuration requise pour l\'IA sur Vercel') && !data.answer.includes('pic temporaire d\'affluence')) {
+          return data;
+        }
+        // If it was the fallback message but we have a customKey, attempt direct client generation below
+        if (data && data.answer && !customKey) {
+          return data;
+        }
       }
     } catch {}
+
+    // Client-side direct Gemini invocation with Live Web search if key is available
+    if (customKey) {
+      try {
+        const liveWeb = await fetchClientLiveWeb(prompt);
+        const verses = await this.search(prompt, translation);
+        const topVerses = verses.slice(0, 3);
+        const ragContext = topVerses.map(v => `> « ${v.text} » — ${v.bookName} ${v.chapter}:${v.verse}`).join('\n');
+
+        const systemPrompt = `Tu es BIBLE AI, assistant spirituel et théologique officiel. Slogan : "La Bible, la connaissance et l'intelligence au même endroit".
+Tu as accès aux Écritures et aux données en direct du Net. Tu réponds avec profondeur, fidélité biblique, respect et précision théologique en t'appuyant sur les faits vérifiés et l'histoire.`;
+
+        const fullPrompt = `${prompt}
+${liveWeb ? `\n[INFORMATIONS EN DIRECT DU NET / CONTEXTE CONTEMPORAIN] :\n${liveWeb}\n[FIN DU WEB]` : ''}
+${ragContext ? `\n[VERSETS BIBLIQUES VÉRIFIÉS] :\n${ragContext}\n[FIN DES VERSETS]` : ''}`;
+
+        const directAnswer = await callDirectClientGemini(fullPrompt, systemPrompt, customKey);
+        if (directAnswer) {
+          return {
+            agentType: agentType || 'bible_general',
+            agentName: 'Bible AI (Direct Live)',
+            answer: directAnswer,
+            ragReferences: topVerses.map(v => `${v.bookName} ${v.chapter}:${v.verse}`)
+          };
+        }
+      } catch (err) {
+        console.warn('[Bible AI] Direct client Gemini attempt:', err);
+      }
+    }
 
     // Client-side Bible search RAG fallback when deployed statically without active backend
     const verses = await this.search(prompt, translation);
@@ -564,11 +719,15 @@ Dans l'ensemble des Écritures, de la Genèse à l'Apocalypse, Dieu révèle Sa 
   },
 
   async explainVerse(bookName: string, chapter: number, verse: number, text: string, translation: 'LSG' | 'KJV' = 'LSG'): Promise<AiChatResponse> {
+    const customKey = getStoredApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (customKey) headers['x-gemini-api-key'] = customKey;
+
     try {
       const res = await fetch('/api/ai/explain-verse', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bookName, chapter, verse, text, translation }),
+        headers,
+        body: JSON.stringify({ bookName, chapter, verse, text, translation, apiKey: customKey }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -576,47 +735,95 @@ Dans l'ensemble des Écritures, de la Genèse à l'Apocalypse, Dieu révèle Sa 
       }
     } catch {}
 
-    return {
-      agentType: 'verse_explanation',
-      agentName: 'Verse Explanation Agent',
-      answer: `### 📖 Le passage biblique
-> « ${text} » — *${bookName} ${chapter}:${verse} (${translation})*
-
-### 💡 Explication générale
-Ce passage est un joyau scripturaire qui témoigne de la fidélité de Dieu et de Son plan pour l'humanité.
-
-### 🔎 Contexte immédiat
-Dans le chapitre ${chapter} de ${bookName}, l'auteur transmet une révélation essentielle sur la relation de l'homme avec son Créateur et sur la rédemption.
-
-### 🏛️ Contexte historique et culturel
-Rédigé dans son contexte original, ce texte rappelle la constance de l'alliance divine et répond aux défis spirituels de son époque.
-
-### 🧠 Enseignement principal
-Dieu invite Son peuple à une confiance inébranlable et à une obéissance guidée par Son Esprit.
-
-### ❤️ Application pratique
-Comment appliquer ce verset aujourd'hui ? Prenez un moment de recueillement pour aligner vos choix avec la vérité de ce passage.
-
-### 🙏 Prière
-*« Père céleste, grave ce verset dans mon cœur afin que je ne pèche point contre Toi. Guide mes pas dans Ta vérité. Amen. »*`,
-      ragReferences: [`${bookName} ${chapter}:${verse}`]
-    };
+    return this.chatWithAi(`Explique en profondeur le verset biblique : ${bookName} ${chapter}:${verse} (${translation}). Texte : "${text}". Fournis l'exégèse complète, le contexte historique, les enseignements spirituels et l'application pratique.`, 'verse_explanation', translation);
   },
 
   async generateStudy(topic: string, duration: string, level: string, translation: 'LSG' | 'KJV' = 'LSG'): Promise<AiChatResponse> {
-    return this.chatWithAi(`Génère une étude biblique complète sur "${topic}" (Durée : ${duration}, Niveau : ${level})`, 'study', translation);
+    const customKey = getStoredApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (customKey) headers['x-gemini-api-key'] = customKey;
+
+    try {
+      const res = await fetch('/api/ai/generate-study', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ topic, duration, level, translation, apiKey: customKey }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.answer && !data.answer.includes('pic temporaire d\'affluence') && !data.answer.includes('Configuration requise')) {
+          return data;
+        }
+      }
+    } catch {}
+
+    return this.chatWithAi(`Génère une étude biblique complète et théologiquement structurée sur le sujet : "${topic}". Durée d'étude visée : ${duration}. Niveau : ${level}.`, 'study', translation);
   },
 
   async generatePrayer(theme: string, passage: string, translation: 'LSG' | 'KJV' = 'LSG'): Promise<AiChatResponse> {
-    return this.chatWithAi(`Rédige une prière fervente sur le thème : "${theme}". Passage : "${passage}"`, 'prayer', translation);
+    const customKey = getStoredApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (customKey) headers['x-gemini-api-key'] = customKey;
+
+    try {
+      const res = await fetch('/api/ai/generate-prayer', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ theme, passage, translation, apiKey: customKey }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.answer && !data.answer.includes('pic temporaire d\'affluence')) {
+          return data;
+        }
+      }
+    } catch {}
+
+    return this.chatWithAi(`Rédige une prière scripturaire fervente, humble et inspirée de la Parole de Dieu sur le thème : "${theme}". Passage biblique d'ancrage : "${passage}".`, 'prayer', translation);
   },
 
   async generateVideoScript(topic: string, duration: string, targetAudience: string, translation: 'LSG' | 'KJV' = 'LSG'): Promise<AiChatResponse> {
-    return this.chatWithAi(`Crée un script vidéo captivant sur "${topic}" (Durée : ${duration}, Public : ${targetAudience})`, 'video_script', translation);
+    const customKey = getStoredApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (customKey) headers['x-gemini-api-key'] = customKey;
+
+    try {
+      const res = await fetch('/api/ai/generate-video-script', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ topic, duration, targetAudience, translation, apiKey: customKey }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.answer && !data.answer.includes('pic temporaire d\'affluence')) {
+          return data;
+        }
+      }
+    } catch {}
+
+    return this.chatWithAi(`Crée un script vidéo professionnel pour les réseaux sociaux (YouTube / Reels) sur le sujet : "${topic}". Durée estimée : ${duration}. Public cible : ${targetAudience}.`, 'video_script', translation);
   },
 
   async generateContent(topic: string, contentType: string, tone: string, translation: 'LSG' | 'KJV' = 'LSG'): Promise<AiChatResponse> {
-    return this.chatWithAi(`Rédige un contenu d'édification chrétienne (${contentType}, ton : ${tone}) sur "${topic}"`, 'content', translation);
+    const customKey = getStoredApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (customKey) headers['x-gemini-api-key'] = customKey;
+
+    try {
+      const res = await fetch('/api/ai/generate-content', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ topic, contentType, tone, translation, apiKey: customKey }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.answer && !data.answer.includes('pic temporaire d\'affluence')) {
+          return data;
+        }
+      }
+    } catch {}
+
+    return this.chatWithAi(`Rédige un contenu chrétien d'édification (type : ${contentType}, ton : ${tone}) sur "${topic}"`, 'content', translation);
   },
 
   async getAdminStats(): Promise<any> {

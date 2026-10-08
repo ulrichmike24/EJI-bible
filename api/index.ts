@@ -126,20 +126,75 @@ app.get('/api/bible/devotional/today', (req: Request, res: Response) => {
   res.json({ devotional: getTodayDevotional() });
 });
 
+// Helper to extract custom API key if provided by client
+function getRequestApiKey(req: Request): string | undefined {
+  return (
+    (req.headers['x-gemini-api-key'] as string) ||
+    req.body?.apiKey ||
+    (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')
+      ? req.headers.authorization.slice(7)
+      : undefined)
+  );
+}
+
+app.get('/api/ai/status', (req: Request, res: Response) => {
+  const customKey = getRequestApiKey(req);
+  res.json({
+    status: 'online',
+    activeModel: 'gemini-3.1-flash-lite',
+    hasApiKey: Boolean(customKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+    searchGrounding: 'live-web-augmented',
+  });
+});
+
 app.post('/api/ai/chat', async (req: Request, res: Response) => {
   const { prompt, agentType, translation = 'LSG' } = req.body;
   if (!prompt || typeof prompt !== 'string') {
     res.status(400).json({ error: 'Le prompt est requis.' });
     return;
   }
-  const result = await processBibleAiRequest(prompt, agentType as AgentType, translation);
+  const customKey = getRequestApiKey(req);
+  const result = await processBibleAiRequest(prompt, agentType as AgentType, translation, customKey);
   res.json(result);
 });
 
 app.post('/api/ai/explain-verse', async (req: Request, res: Response) => {
   const { bookName, chapter, verse, text, translation = 'LSG' } = req.body;
   const prompt = `Explique en profondeur le verset biblique : ${bookName} ${chapter}:${verse} (${translation}). Texte : "${text}". Fournis l'exégèse complète, le contexte historique, les enseignements spirituels et l'application pratique.`;
-  const result = await processBibleAiRequest(prompt, 'verse_explanation', translation);
+  const customKey = getRequestApiKey(req);
+  const result = await processBibleAiRequest(prompt, 'verse_explanation', translation, customKey);
+  res.json(result);
+});
+
+app.post('/api/ai/generate-study', async (req: Request, res: Response) => {
+  const { topic, duration = '30 minutes', level = 'Débutant', translation = 'LSG' } = req.body;
+  const prompt = `Génère une étude biblique complète et théologiquement structurée sur le sujet : "${topic}". Durée d'étude visée : ${duration}. Niveau : ${level}.`;
+  const customKey = getRequestApiKey(req);
+  const result = await processBibleAiRequest(prompt, 'study', translation, customKey);
+  res.json(result);
+});
+
+app.post('/api/ai/generate-prayer', async (req: Request, res: Response) => {
+  const { theme, passage, translation = 'LSG' } = req.body;
+  const prompt = `Rédige une prière scripturaire fervente, humble et inspirée de la Parole de Dieu sur le thème : "${theme}". Passage biblique d'ancrage : "${passage}".`;
+  const customKey = getRequestApiKey(req);
+  const result = await processBibleAiRequest(prompt, 'prayer', translation, customKey);
+  res.json(result);
+});
+
+app.post('/api/ai/generate-video-script', async (req: Request, res: Response) => {
+  const { topic, duration = '3 minutes', targetAudience = 'Grand public', translation = 'LSG' } = req.body;
+  const prompt = `Crée un script vidéo professionnel pour les réseaux sociaux (YouTube / Reels) sur le sujet : "${topic}". Durée estimée : ${duration}. Public cible : ${targetAudience}. Inclus le hook, les visuels à l'écran, la narration, les références bibliques, et l'appel à l'action.`;
+  const customKey = getRequestApiKey(req);
+  const result = await processBibleAiRequest(prompt, 'video_script', translation, customKey);
+  res.json(result);
+});
+
+app.post('/api/ai/generate-content', async (req: Request, res: Response) => {
+  const { topic, contentType = 'article', tone = 'pastoral', translation = 'LSG' } = req.body;
+  const prompt = `Rédige un contenu chrétien d'édification (type : ${contentType}, ton : ${tone}) sur le sujet : "${topic}".`;
+  const customKey = getRequestApiKey(req);
+  const result = await processBibleAiRequest(prompt, 'content', translation, customKey);
   res.json(result);
 });
 
